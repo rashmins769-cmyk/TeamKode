@@ -6,137 +6,156 @@ import { FitAddon } from 'xterm-addon-fit';
 import { getWebContainer, writeFilesToContainer } from '../../utils/webcontainer';
 import 'xterm/css/xterm.css';
 
-export const TerminalView = () => {
+export const TerminalView = ({ isActive = true }) => {
   const { files } = useEditor();
   const [activeTerminal, setActiveTerminal] = useState('terminal-1');
-  const [terminals, setTerminals] = useState([
-    { id: 'terminal-1', name: 'bash' },
-  ]);
+  const [terminals, setTerminals] = useState([{ id: 'terminal-1', name: 'bash' }]);
   const [isBooting, setIsBooting] = useState(true);
-  
+
   const terminalRef = useRef(null);
   const xtermInstance = useRef(null);
   const fitAddon = useRef(null);
-  const shellProcessRef = useRef(null);
+  const hasInitialized = useRef(false);
 
+  // ── Re-fit every time this tab becomes visible ──
   useEffect(() => {
-    // Initialize xterm.js
-    if (!terminalRef.current) return;
+    if (!isActive || !fitAddon.current) return;
+    // Give the DOM a frame to update display:flex before fitting
+    const t = setTimeout(() => {
+      requestAnimationFrame(() => { try { fitAddon.current.fit(); } catch (_) {} });
+    }, 20);
+    return () => clearTimeout(t);
+  }, [isActive]);
+
+  // ── Initialize xterm the FIRST time this tab becomes visible ──
+  useEffect(() => {
+    if (!isActive || hasInitialized.current || !terminalRef.current) return;
+    hasInitialized.current = true;
 
     const term = new Terminal({
       theme: {
         background: '#0d0d0d',
         foreground: '#cccccc',
         cursor: '#ffffff',
-        selectionBackground: 'rgba(255, 255, 255, 0.3)',
+        selectionBackground: 'rgba(255,255,255,0.3)',
       },
       fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
       fontSize: 13,
       cursorBlink: true,
       convertEol: true,
     });
-    
+
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(terminalRef.current);
-    fit.fit();
-    
-    xtermInstance.current = term;
-    fitAddon.current = fit;
 
-    const handleResize = () => fit.fit();
-    window.addEventListener('resize', handleResize);
-
+    // ── Boot WebContainer & spawn interactive shell ──
     const bootContainer = async () => {
       try {
         term.writeln('\x1b[34m[DevSync Engine]\x1b[0m Provisioning container...');
-        
         const webcontainerInstance = await getWebContainer();
-        
+
         term.writeln('\x1b[34m[DevSync Engine]\x1b[0m Mounting workspace files...');
         await writeFilesToContainer(files);
 
         term.writeln('\x1b[34m[DevSync Engine]\x1b[0m Starting interactive shell...');
-        
-        // Start shell process
+
         const shellProcess = await webcontainerInstance.spawn('jsh', {
-          terminal: {
-            cols: term.cols,
-            rows: term.rows,
-          },
-        });
-        
-        shellProcessRef.current = shellProcess;
-
-        // Pipe xterm output to shell process input
-        const inputListener = term.onData((data) => {
-          shellProcess.input.write(data);
+          terminal: { cols: term.cols, rows: term.rows },
         });
 
-        // Pipe shell process output to xterm
+        const inputWriter = shellProcess.input.getWriter();
+        term.onData((data) => inputWriter.write(data));
+
         shellProcess.output.pipeTo(
-          new WritableStream({
-            write(data) {
-              term.write(data);
-            },
-          })
+          new WritableStream({ write(data) { term.write(data); } })
         );
 
         setIsBooting(false);
-
       } catch (error) {
         term.writeln(`\x1b[31mError booting container:\x1b[0m ${error.message}`);
         setIsBooting(false);
       }
     };
 
-    bootContainer();
+    // Open xterm after a short delay to ensure the container has real pixel dimensions
+    const initTimer = setTimeout(() => {
+      if (!terminalRef.current) return;
 
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      term.dispose();
-      // Note: we intentionally don't kill the shell process so it persists across tab changes
-    };
-  }, []);
+      term.open(terminalRef.current);
+      xtermInstance.current = term;
+      fitAddon.current = fit;
+
+      requestAnimationFrame(() => {
+        try { fit.fit(); } catch (_) {}
+        bootContainer();
+      });
+
+      // Window resize handler
+      const handleResize = () => {
+        requestAnimationFrame(() => { try { fit.fit(); } catch (_) {} });
+      };
+      window.addEventListener('resize', handleResize);
+
+      // ResizeObserver for panel drag resize
+      const ro = new ResizeObserver(() => {
+        requestAnimationFrame(() => { try { fit.fit(); } catch (_) {} });
+      });
+      ro.observe(terminalRef.current);
+
+      // Store cleanup in ref so it can run if needed
+      term._cleanupFns = () => {
+        window.removeEventListener('resize', handleResize);
+        ro.disconnect();
+      };
+    }, 80);
+
+    return () => clearTimeout(initTimer);
+  }, [isActive]);
 
   const addTerminal = () => {
     const id = `terminal-${Date.now()}`;
     setTerminals(prev => [...prev, { id, name: 'bash' }]);
     setActiveTerminal(id);
-    // In a full implementation, this would spawn a new shell process and swap the xterm DOM target.
   };
 
   const deleteTerminal = (id) => {
     setTerminals(prev => {
       const next = prev.filter(t => t.id !== id);
-      if (activeTerminal === id) {
-        setActiveTerminal(next.length > 0 ? next[next.length - 1].id : null);
-      }
+      if (activeTerminal === id) setActiveTerminal(next[next.length - 1]?.id || null);
       return next;
     });
   };
 
   return (
-    <div style={{ display: 'flex', flex: 1, background: '#0d0d0d', fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace", fontSize: 13, overflow: 'hidden' }}>
-      
-      {/* Main terminal area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
-        <div 
-          ref={terminalRef} 
-          style={{ width: '100%', height: '100%', padding: '8px' }} 
+    <div style={{
+      display: 'flex', flex: 1, background: '#0d0d0d', overflow: 'hidden',
+      fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace", fontSize: 13,
+    }}>
+
+      {/* Main terminal area — use absolute fill so xterm gets real px dimensions */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div
+          ref={terminalRef}
+          style={{
+            position: 'absolute',
+            inset: '8px', // padding via inset so xterm measures real dimensions
+          }}
         />
-        
+
         {isBooting && (
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(13,13,13,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#007acc', gap: 8 }}>
+          <div style={{
+            position: 'absolute', inset: 0, background: 'rgba(13,13,13,0.85)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#007acc', gap: 8, zIndex: 10,
+          }}>
             <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
             <span>Spinning up container...</span>
           </div>
         )}
       </div>
 
-      {/* Right panel - terminal sessions */}
+      {/* Right panel — terminal sessions list */}
       <div style={{ width: 190, borderLeft: '1px solid #1e1e1e', display: 'flex', flexDirection: 'column', background: '#111' }}>
-        {/* Toolbar */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', borderBottom: '1px solid #1e1e1e' }}>
           <div style={{ display: 'flex', gap: 2 }}>
             <button onClick={addTerminal} title="New Terminal"
@@ -152,29 +171,28 @@ export const TerminalView = () => {
               <SplitSquareHorizontal size={14} />
             </button>
           </div>
-          <div style={{ display: 'flex', gap: 2 }}>
-            <button onClick={() => { if(xtermInstance.current) xtermInstance.current.clear(); }} title="Clear"
-              style={{ background: 'none', border: 'none', color: '#858585', cursor: 'pointer', padding: 4, borderRadius: 4, display: 'flex' }}
-              onMouseEnter={e => e.currentTarget.style.background = '#2a2d2e'}
-              onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-              <Trash2 size={14} />
-            </button>
-          </div>
+          <button
+            onClick={() => { if (xtermInstance.current) xtermInstance.current.clear(); }}
+            title="Clear"
+            style={{ background: 'none', border: 'none', color: '#858585', cursor: 'pointer', padding: 4, borderRadius: 4, display: 'flex' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#2a2d2e'}
+            onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+            <Trash2 size={14} />
+          </button>
         </div>
 
-        {/* Terminal session list */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
           {terminals.map(t => (
             <div key={t.id}
               onClick={() => setActiveTerminal(t.id)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '5px 6px 5px 12px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 6px 5px 12px', cursor: 'pointer',
                 background: activeTerminal === t.id ? '#37373d' : 'transparent',
                 borderLeft: activeTerminal === t.id ? '2px solid #007acc' : '2px solid transparent',
                 color: activeTerminal === t.id ? '#ffffff' : '#858585',
                 position: 'relative',
               }}
-              className="terminal-session-row"
               onMouseEnter={e => {
                 if (activeTerminal !== t.id) e.currentTarget.style.background = '#1e1e1e';
                 const btn = e.currentTarget.querySelector('.del-btn');
@@ -187,7 +205,9 @@ export const TerminalView = () => {
               }}
             >
               <TerminalSquare size={13} style={{ flexShrink: 0 }} />
-              <span style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
+              <span style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t.name}
+              </span>
               <button
                 className="del-btn"
                 onClick={e => { e.stopPropagation(); deleteTerminal(t.id); }}
@@ -209,7 +229,6 @@ export const TerminalView = () => {
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        /* Fix xterm.js scrollbar visibility */
         .xterm-viewport::-webkit-scrollbar { width: 6px; }
         .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
         .xterm-viewport::-webkit-scrollbar-thumb { background: rgba(100,100,100,0.4); border-radius: 3px; }

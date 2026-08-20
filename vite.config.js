@@ -16,7 +16,7 @@ export default defineConfig({
     },
     proxy: {
       '/yjs': {
-        target: 'ws://localhost:1234',
+        target: 'ws://localhost:5005',
         ws: true,
       }
     }

@@ -277,10 +277,10 @@ export const EditorProvider = ({ children, template }) => {
       return; 
     }
     
-    setBottomPanelTab('terminal'); 
+    setBottomPanelTab('output'); 
     setIsRunning(true);
     setOutput('');  // clear first so the useEffect always fires on new output
-    globalState.set('bottomPanel', { isOpen: true, tab: 'terminal' });
+    globalState.set('bottomPanel', { isOpen: true, tab: 'output' });
     
     const result = await executeCode(lang, codeToRun);
     setOutput(result || '(no output)'); 
