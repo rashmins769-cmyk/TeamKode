@@ -8,6 +8,10 @@ const WebSocket = require('ws');
 const app = express();
 app.use(cors());
 
+app.get('/', (req, res) => {
+  res.send('DevSync Server is running!');
+});
+
 const server = http.createServer(app);
 
 // ── Yjs WebSocket Setup ──────────────────────────────────────────────────
